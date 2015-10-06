@@ -16,6 +16,7 @@
 #include <unistd.h>
 #include <stdio.h>
 #include <glib.h>
+#include <time.h>
 
 typedef struct {
     char* type;         // GET - POST - Header
@@ -26,6 +27,50 @@ typedef struct {
     char* host;
     char* acceptLanguage;
 } ClientHeader;
+
+GString *RESPONSE_HEAD;
+
+void createHead(int contentLength) {
+    /* Creating the date format */
+    char date[100];
+    time_t now = time(NULL);
+    struct tm *t = localtime(&now);
+    strftime(date, sizeof(date)-1, "%a, %d %h %Y %H:%M:%S GMT", t);
+    char c[16];
+    sprintf(c, "%d", contentLength);
+    RESPONSE_HEAD = g_string_new("HTTP/1.1 200 OK\r\nDate:");
+    RESPONSE_HEAD = g_string_append(RESPONSE_HEAD, date);
+    RESPONSE_HEAD = g_string_append(RESPONSE_HEAD, "\r\nContent-Type: text/html\r\nContent-Length: ");
+    RESPONSE_HEAD = g_string_append(RESPONSE_HEAD, c);
+    RESPONSE_HEAD = g_string_append(RESPONSE_HEAD, "\r\n\r\n");
+}
+
+void handleGET(int connfd) {
+    /* Send the message back. */
+    GString *page = g_string_new("<!doctype html>\n<head>\n<title>Jolly good</title>\n</head>");
+    page = g_string_append(page, "<body>\nHello mates! Welcome to our web site\n</body>\n</html>");
+
+    createHead(page->len);
+    page = g_string_prepend(page, RESPONSE_HEAD->str);
+
+    printf("%s\n", page->str);
+    write(connfd, page->str, (size_t) page->len);
+    g_string_free(page, 1);
+    g_string_free(RESPONSE_HEAD, 1);
+}
+
+void handlePOST(int connfd, ClientHeader *clientHeader) {
+    /* Send the message back. */
+    GString *page = g_string_new("<!doctype html>\n<head>\n<title>Jolly good</title>\n</head>\n<body>\n");
+    page = g_string_append(page, clientHeader->body);
+    page = g_string_append(page,"\n</body> \n</html>");
+
+    createHead(page->len);
+    page = g_string_prepend(page, RESPONSE_HEAD->str);
+    
+    write(connfd, page->str, (size_t) page->len);
+    g_string_free(page, 1);
+}
 
 int main(int argc, char **argv)
 {
@@ -79,16 +124,12 @@ int main(int argc, char **argv)
             ssize_t n = read(connfd, message, sizeof(message) - 1);
 
             /* Building a struct of header arguments */
-            ClientHeader* clientHeader = (ClientHeader*) malloc(sizeof(ClientHeader));
+            ClientHeader* clientHeader = g_new0(ClientHeader, 1);
             gchar **reqlist = g_strsplit(message, "\r\n", 100);
 
             clientHeader->type = strtok(reqlist[0], " \t\n");
             clientHeader->file = strtok(NULL, " \t");
             clientHeader->httpVersion = strtok(NULL, " \t\n");
-
-            printf("Client header type: %s\n", clientHeader->type);
-            printf("Client header file: %s\n", clientHeader->file);
-            printf("Client header version: %s\n", clientHeader->httpVersion);
 
             int i = 1;
             while(reqlist[i] != NULL) {
@@ -100,6 +141,7 @@ int main(int argc, char **argv)
                 }
 
                 ++i;
+                g_strfreev(linesplit);
             }
 
             if(g_strcmp0(clientHeader->httpVersion, "HTTP/1.0") != 0 && g_strcmp0(clientHeader->httpVersion, "HTTP/1.1") != 0) {
@@ -107,43 +149,25 @@ int main(int argc, char **argv)
             }
             else {
                 if(g_strcmp0(clientHeader->type, "GET") == 0) {
-                    /* Send the message back. */
-                    char page[512] = "<!doctype html>"
-                                    "<head>"
-                                        "<title>Jolly good</title>"
-                                    "</head>"
-                                    "<body>"
-                                        "Hello mates! Welcome to our web site"
-                                    "</body>"
-                                    "</html>";
-                    printf("get\n");
-                    write(connfd, page, (size_t) 512);
+                    handleGET(connfd);
                 }
                 else if(g_strcmp0(clientHeader->type, "POST") == 0) {
-                    /* Send the message back. */
-                    GSList* returnMsg = NULL;
-                    returnMsg = g_slist_append(returnMsg, "<!doctype html>"
-                                    "<head>"
-                                        "<title>POST POST</title>"
-                                    "</head>" 
-                                    "<body>");
-                    returnMsg = g_slist_append(returnMsg, clientHeader->body);
-                    returnMsg = g_slist_append(returnMsg,"</body> \n</html>");
-                    gchar *fullmsg = g_strconcat(g_slist_nth_data(returnMsg, 0), g_slist_nth_data(returnMsg, 1), g_slist_nth_data(returnMsg, 2));
-                    printf("Full msg: %s\n", fullmsg);
-                    //write(connfd, returnMsg, (size_t) 512);
+                    handlePOST(connfd, clientHeader);
                 }
                 else if(g_strcmp0(clientHeader->type, "HEAD") == 0) {
                 }
             }
             
+            g_strfreev(reqlist);
             /* We should close the connection. */
             shutdown(connfd, SHUT_RDWR);
             close(connfd);
 
             /* Print the message to stdout and flush. */
-            fprintf(stdout, "Received:\n%s\n", message);
+            // fprintf(stdout, "Received:\n%s\n", message);
             fflush(stdout);
+
+            g_free(clientHeader);
         } else {
             fprintf(stdout, "No message in five seconds.\n");
             fflush(stdout);
