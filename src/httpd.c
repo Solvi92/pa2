@@ -28,7 +28,16 @@ typedef struct {
     char* acceptLanguage;
 } ClientHeader;
 
+typedef struct {
+    int clientIP;
+    short clientPort;
+    char* requestMethod;
+    char* requestedURL;
+    char* responseCode;
+} LogInfo;
+
 GString *RESPONSE_HEAD;
+LogInfo* logInfo;
 
 void createHead(int contentLength) {
     /* Creating the date format */
@@ -38,7 +47,7 @@ void createHead(int contentLength) {
     strftime(date, sizeof(date)-1, "%a, %d %h %Y %H:%M:%S GMT", t);
     char c[16];
     sprintf(c, "%d", contentLength);
-    RESPONSE_HEAD = g_string_new("HTTP/1.1 200 OK\r\nDate:");
+    RESPONSE_HEAD = g_string_new("HTTP/1.1 200 OK\r\nDate: ");
     RESPONSE_HEAD = g_string_append(RESPONSE_HEAD, date);
     RESPONSE_HEAD = g_string_append(RESPONSE_HEAD, "\r\nContent-Type: text/html\r\nContent-Length: ");
     RESPONSE_HEAD = g_string_append(RESPONSE_HEAD, c);
@@ -53,7 +62,6 @@ void handleGET(int connfd) {
     createHead(page->len);
     page = g_string_prepend(page, RESPONSE_HEAD->str);
 
-    printf("%s\n", page->str);
     write(connfd, page->str, (size_t) page->len);
     g_string_free(page, 1);
     g_string_free(RESPONSE_HEAD, 1);
@@ -67,9 +75,16 @@ void handlePOST(int connfd, ClientHeader *clientHeader) {
 
     createHead(page->len);
     page = g_string_prepend(page, RESPONSE_HEAD->str);
-    
+
     write(connfd, page->str, (size_t) page->len);
     g_string_free(page, 1);
+    g_string_free(RESPONSE_HEAD, 1);
+}
+
+void handleHEAD(int connfd) {
+    createHead(0);
+    write(connfd, RESPONSE_HEAD->str, RESPONSE_HEAD->len);
+    g_string_free(RESPONSE_HEAD, 1);
 }
 
 int main(int argc, char **argv)
@@ -77,6 +92,7 @@ int main(int argc, char **argv)
     int sockfd;
     struct sockaddr_in server, client;
     char message[512];
+    logInfo = g_new0(LogInfo, 1);
 
     /* Create and bind a UDP socket */
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -120,8 +136,13 @@ int main(int argc, char **argv)
             int connfd;
             connfd = accept(sockfd, (struct sockaddr *) &client,
                             &len);
-
             ssize_t n = read(connfd, message, sizeof(message) - 1);
+            
+            /* Getting information about the user
+            Right now, the IP address is very wrong */
+            logInfo->clientIP = inet_ntoa(client.sin_addr);
+            logInfo->clientPort = ntohs(client.sin_port);
+
 
             /* Building a struct of header arguments */
             ClientHeader* clientHeader = g_new0(ClientHeader, 1);
@@ -144,10 +165,16 @@ int main(int argc, char **argv)
                 g_strfreev(linesplit);
             }
 
+            logInfo->requestMethod = clientHeader->type;
+            logInfo->requestedURL = clientHeader->file;
+
             if(g_strcmp0(clientHeader->httpVersion, "HTTP/1.0") != 0 && g_strcmp0(clientHeader->httpVersion, "HTTP/1.1") != 0) {
                 write(connfd, "HTTP/1.0 400 Bad Request\n", (size_t) 512);
+                logInfo->responseCode = "400 Bad Request";
             }
             else {
+                
+                logInfo->responseCode = "200 OK";
                 if(g_strcmp0(clientHeader->type, "GET") == 0) {
                     handleGET(connfd);
                 }
@@ -155,19 +182,21 @@ int main(int argc, char **argv)
                     handlePOST(connfd, clientHeader);
                 }
                 else if(g_strcmp0(clientHeader->type, "HEAD") == 0) {
+                    handleHEAD(connfd);
                 }
             }
-            
+
             g_strfreev(reqlist);
             /* We should close the connection. */
             shutdown(connfd, SHUT_RDWR);
             close(connfd);
 
             /* Print the message to stdout and flush. */
-            // fprintf(stdout, "Received:\n%s\n", message);
+            fprintf(stdout, "Received:\n%s\n", message);
             fflush(stdout);
 
             g_free(clientHeader);
+            g_free(logInfo);
         } else {
             fprintf(stdout, "No message in five seconds.\n");
             fflush(stdout);
