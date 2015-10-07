@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <glib.h>
 #include <time.h>
+#include <arpa/inet.h>
 
 typedef struct {
     char* type;         // GET - POST - Header
@@ -29,15 +30,50 @@ typedef struct {
 } ClientHeader;
 
 typedef struct {
-    int clientIP;
-    short clientPort;
-    char* requestMethod;
-    char* requestedURL;
-    char* responseCode;
+    char clientIP[64];
+    char clientPort[8];
+    char requestMethod[16];
+    char requestedURL[32];
+    char responseCode[32];
 } LogInfo;
 
 GString *RESPONSE_HEAD;
 LogInfo* logInfo;
+
+void writeToLog() {
+    FILE *logFile;
+    logFile = fopen("httpd.log", "a");
+
+    time_t timestamp;
+    time(&timestamp);
+    char buf[sizeof("2011-10-08T07:07:09Z")];
+    strftime(buf, sizeof(buf), "%FT%TZ", gmtime(&timestamp));
+
+    GString *stringBuilder = g_string_new(buf);
+    stringBuilder = g_string_append(stringBuilder, " : ");
+    stringBuilder = g_string_append(stringBuilder, logInfo->clientIP);
+    stringBuilder = g_string_append(stringBuilder, ":");
+    stringBuilder = g_string_append(stringBuilder, logInfo->clientPort);
+    stringBuilder = g_string_append(stringBuilder, " ");
+    stringBuilder = g_string_append(stringBuilder, logInfo->requestMethod);
+    stringBuilder = g_string_append(stringBuilder, " ");
+    stringBuilder = g_string_append(stringBuilder, logInfo->requestedURL);
+    stringBuilder = g_string_append(stringBuilder, " : ");
+    stringBuilder = g_string_append(stringBuilder, logInfo->responseCode);
+
+    /* timestamp : <client ip>:<client port> <request method>
+    <requested URL> : <response code> */
+
+    if(logFile == NULL) {
+        printf("Error when opening file mates :>");
+    }
+    else {
+        fprintf(logFile, "%s\n", stringBuilder->str);
+    }
+
+    fclose(logFile);
+    g_string_free(stringBuilder, 1);
+}
 
 void createHead(int contentLength) {
     /* Creating the date format */
@@ -55,44 +91,114 @@ void createHead(int contentLength) {
 }
 
 void handleGET(int connfd) {
-    /* Send the message back. */
-    GString *page = g_string_new("<!doctype html>\n<head>\n<title>Jolly good</title>\n</head>");
-    page = g_string_append(page, "<body>\nHello mates! Welcome to our web site\n</body>\n</html>");
+    /* Creating the page */
+    GString *page = g_string_new("<!doctype html>\n<head>\n<title>Jolly good</title>\n</head>\n");
 
+    /* Checking to see if any query parameters are following */
+    gchar **list = g_strsplit(logInfo->requestedURL, "?", -1);
+
+    if(g_strv_length(list) > 1) {
+        /* Leaving body open in case color has to be added */
+        g_string_append(page, "<body");
+
+        /* Checking to see if color has been specified */
+        if(strstr(list[0], "color") != NULL) {
+            char *bg;
+            /* Finding the word bg in the query and assigning the color with it */
+            if((bg = strstr(list[1], "bg=")) != NULL) {
+                gchar **beforeAnd = g_strsplit(bg, "&", -1);
+                gchar **bgSplit = g_strsplit(beforeAnd[0], "=", -1);
+
+                /* Appending the background color to the <body> tag */
+                g_string_append(page, " style='background-color:");
+                g_string_append(page, bgSplit[1]);
+                g_string_append(page, "'");
+
+                g_strfreev(beforeAnd);
+                g_strfreev(bgSplit);
+            }
+        }
+
+        /* Appending the closing tag of <body> */
+        g_string_append(page, ">\n");
+
+        if(strstr(list[0], "test") != NULL) {
+            /* Query parameters found in the url */
+            gchar **queryList = g_strsplit(list[1], "&", -1);
+            /* Adding a p tag to the site containing all the query parameters */
+            page = g_string_append(page, "<p>\n");
+            int i = 0;
+            /* For each query we create a line in the paragraph */
+            for(i; i < g_strv_length(queryList); ++i) {
+                page = g_string_append(page, queryList[i]);
+                page = g_string_append(page, " ");
+                page = g_string_append(page, "</br>\n");
+            }
+            page = g_string_append(page, page->str);
+            page = g_string_append(page, "</p>");
+
+            g_strfreev(queryList);
+        }
+        
+    }
+    page = g_string_append(page, "\nHello mates! Welcome to our web site\n</body>\n</html>");
+
+
+    /* Creating the http header and prepending it to the page */
     createHead(page->len);
     page = g_string_prepend(page, RESPONSE_HEAD->str);
 
+    /* Sending the page to the client */
     write(connfd, page->str, (size_t) page->len);
+
+    /* Free */
     g_string_free(page, 1);
     g_string_free(RESPONSE_HEAD, 1);
+
+    /* Logging down the user information */
+    writeToLog();
+    g_strfreev(list);
 }
 
 void handlePOST(int connfd, ClientHeader *clientHeader) {
-    /* Send the message back. */
+    /* Creating the page */
     GString *page = g_string_new("<!doctype html>\n<head>\n<title>Jolly good</title>\n</head>\n<body>\n");
     page = g_string_append(page, clientHeader->body);
     page = g_string_append(page,"\n</body> \n</html>");
 
+    /* Creating the http header and prepending it to the page */
     createHead(page->len);
     page = g_string_prepend(page, RESPONSE_HEAD->str);
 
+    /* Sending the page to the client */
     write(connfd, page->str, (size_t) page->len);
+
+    /* Free */
     g_string_free(page, 1);
     g_string_free(RESPONSE_HEAD, 1);
+
+    /* Logging down the user information */
+    writeToLog();
 }
 
 void handleHEAD(int connfd) {
+    /* Creating the http header and sending it to the client */
     createHead(0);
     write(connfd, RESPONSE_HEAD->str, RESPONSE_HEAD->len);
+
+    /* Free */
     g_string_free(RESPONSE_HEAD, 1);
+
+    /* Logging down the user information */
+    writeToLog();
 }
+
 
 int main(int argc, char **argv)
 {
     int sockfd;
     struct sockaddr_in server, client;
     char message[512];
-    logInfo = g_new0(LogInfo, 1);
 
     /* Create and bind a UDP socket */
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -138,16 +244,14 @@ int main(int argc, char **argv)
                             &len);
             ssize_t n = read(connfd, message, sizeof(message) - 1);
             
-            /* Getting information about the user
-            Right now, the IP address is very wrong */
-            logInfo->clientIP = inet_ntoa(client.sin_addr);
-            logInfo->clientPort = ntohs(client.sin_port);
-
+            /* Getting logging information about the user */
+            logInfo = g_new0(LogInfo, 1);
+            strcpy(logInfo->clientIP, inet_ntoa(client.sin_addr));
+            sprintf(logInfo->clientPort, "%d", ntohs(client.sin_port));
 
             /* Building a struct of header arguments */
             ClientHeader* clientHeader = g_new0(ClientHeader, 1);
             gchar **reqlist = g_strsplit(message, "\r\n", 100);
-
             clientHeader->type = strtok(reqlist[0], " \t\n");
             clientHeader->file = strtok(NULL, " \t");
             clientHeader->httpVersion = strtok(NULL, " \t\n");
@@ -165,16 +269,17 @@ int main(int argc, char **argv)
                 g_strfreev(linesplit);
             }
 
-            logInfo->requestMethod = clientHeader->type;
-            logInfo->requestedURL = clientHeader->file;
+            /* Getting logging information about the request */
+            strcpy(logInfo->requestMethod, clientHeader->type);
+            strcpy(logInfo->requestedURL, clientHeader->file);
 
             if(g_strcmp0(clientHeader->httpVersion, "HTTP/1.0") != 0 && g_strcmp0(clientHeader->httpVersion, "HTTP/1.1") != 0) {
                 write(connfd, "HTTP/1.0 400 Bad Request\n", (size_t) 512);
-                logInfo->responseCode = "400 Bad Request";
+                strcpy(logInfo->responseCode, "400 Bad Request");
             }
             else {
-                
-                logInfo->responseCode = "200 OK";
+                /* Everything is in order, handle the request */
+                strcpy(logInfo->responseCode, "200 OK");
                 if(g_strcmp0(clientHeader->type, "GET") == 0) {
                     handleGET(connfd);
                 }
@@ -185,18 +290,19 @@ int main(int argc, char **argv)
                     handleHEAD(connfd);
                 }
             }
-
+            /* Freeing the allocated memory */
             g_strfreev(reqlist);
+            g_free(clientHeader);
+            g_free(logInfo);
+
             /* We should close the connection. */
             shutdown(connfd, SHUT_RDWR);
             close(connfd);
 
             /* Print the message to stdout and flush. */
-            fprintf(stdout, "Received:\n%s\n", message);
+            // fprintf(stdout, "Received:\n%s\n", message);
             fflush(stdout);
 
-            g_free(clientHeader);
-            g_free(logInfo);
         } else {
             fprintf(stdout, "No message in five seconds.\n");
             fflush(stdout);
