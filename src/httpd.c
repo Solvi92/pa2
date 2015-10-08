@@ -1,11 +1,3 @@
-/* A UDP echo server with timeouts.
- *
- * Note that you will not need to use select and the timeout for a
- * tftp server. However, select is also useful if you want to receive
- * from multiple sockets at the same time. Read the documentation for
- * select on how to do this (Hint: Iterate with FD_ISSET()).
- */
-
 #include <assert.h>
 #include <sys/select.h>
 #include <sys/socket.h>
@@ -99,21 +91,21 @@ void handleGET(int connfd, ClientHeader *clientHeader) {
         GSList *header = clientHeader->addHdrs;
         int k = 0;
         for(k; k < g_slist_length(clientHeader->addHdrs); ++k) {
-            char *bg;
+            gchar *bg;
             if((bg = strstr(header->data, "Cookie")) != NULL) {
-                printf("Cookie found\n");
                 gchar **beforeAndCK = g_strsplit(bg, "&", -1);
                 gchar **bgSplitCK = g_strsplit(beforeAndCK[0], "=", -1);
 
-                printf("Cookie var: %s\n", bgSplitCK[1]);
                 g_string_append(clientCookie, bgSplitCK[1]);
-
                 g_strfreev(beforeAndCK);
                 g_strfreev(bgSplitCK);
             }
 
             header = header->next;
+            g_free(bg);
         }
+
+        g_free(header);
     }
 
     /* Checking to see if any query parameters are following */
@@ -191,6 +183,7 @@ void handleGET(int connfd, ClientHeader *clientHeader) {
         }
 
         page = g_string_append(page, "</p>\n");
+        g_free(header);
     }
 
     page = g_string_append(page, "\nHello mates! Welcome to our web site\n</body>\n</html>\n\n");
@@ -202,8 +195,7 @@ void handleGET(int connfd, ClientHeader *clientHeader) {
     g_string_append(RESPONSE_HEAD, cookie->str);
     g_string_append(RESPONSE_HEAD, "\r\n\r\n");
     g_string_prepend(page, RESPONSE_HEAD->str);
-    printf("Header:\n%s", RESPONSE_HEAD->str);
-    
+
     /* Sending the page to the client */
     write(connfd, page->str, (size_t) page->len);
 
@@ -257,7 +249,7 @@ void handleHEAD(int connfd) {
 
 int main(int argc, char **argv)
 {
-    int sockfd;
+    int sockfd, maxfd;
     struct sockaddr_in server, client;
     char message[512];
 
@@ -271,10 +263,10 @@ int main(int argc, char **argv)
     server.sin_port = htons(7309);
     bind(sockfd, (struct sockaddr *) &server, (socklen_t) sizeof(server));
 
-	/* Before we can accept messages, we have to listen to the port. We allow one
-	 * 1 connection to queue for simplicity.
-	 */
-	listen(sockfd, 1);
+    /* Before we can accept messages, we have to listen to the port. We allow one
+     * 1 connection to queue for simplicity.
+     */
+    listen(sockfd, 1);
 
     for (;;) {
         fd_set rfds;
@@ -292,84 +284,97 @@ int main(int argc, char **argv)
 
         if (retval == -1) {
             perror("select()");
-        } else if (retval > 0) {
-            /* Data is available, receive it. */
-            assert(FD_ISSET(sockfd, &rfds));
+        } 
+        else if (retval > 0) {
+            int i = 0;
+            for(i; i < (sockfd + 1); ++i) {
+                /* Data is available, receive it. */
+                assert(FD_ISSET(sockfd, &rfds));
+                if(i == sockfd) {
+                    /* Connection request on original socket */
+                    /* Copy to len, since recvfrom may change it. */
+                    // sleep(3);
+                    socklen_t len = (socklen_t) sizeof(client);
 
-            /* Copy to len, since recvfrom may change it. */
-            socklen_t len = (socklen_t) sizeof(client);
+                    /* For TCP connectios, we first have to accept. */
+                    int connfd;
+                    connfd = accept(sockfd, (struct sockaddr *) &client, &len);
 
-            /* For TCP connectios, we first have to accept. */
-            int connfd;
-            connfd = accept(sockfd, (struct sockaddr *) &client,
-                            &len);
-            ssize_t n = read(connfd, message, sizeof(message) - 1);
+                    ssize_t n = read(connfd, message, sizeof(message) - 1);
             
-            /* Getting logging information about the user */
-            logInfo = g_new0(LogInfo, 1);
-            strcpy(logInfo->clientIP, inet_ntoa(client.sin_addr));
-            sprintf(logInfo->clientPort, "%d", ntohs(client.sin_port));
+                    /* Getting logging information about the user */
+                    logInfo = g_new0(LogInfo, 1);
+                    strcpy(logInfo->clientIP, inet_ntoa(client.sin_addr));
+                    sprintf(logInfo->clientPort, "%d", ntohs(client.sin_port));
 
-            /* Building a struct of header arguments */
-            ClientHeader* clientHeader = g_new0(ClientHeader, 1);
-            gchar **reqlist = g_strsplit(message, "\r\n", 100);
-            clientHeader->type = strtok(reqlist[0], " \t\n");
-            clientHeader->file = strtok(NULL, " \t");
-            clientHeader->httpVersion = strtok(NULL, " \t\n");
-            clientHeader->addHdrs = NULL;
+                    /* Building a struct of header arguments */
+                    ClientHeader* clientHeader = g_new0(ClientHeader, 1);
+                    gchar **reqlist = g_strsplit(message, "\r\n", 100);
+                    clientHeader->type = strtok(reqlist[0], " \t\n");
+                    clientHeader->file = strtok(NULL, " \t");
+                    clientHeader->httpVersion = strtok(NULL, " \t\n");
+                    clientHeader->addHdrs = NULL;
 
-            int i = 1;
-            while(reqlist[i] != NULL) {
-                gchar **linesplit = g_strsplit(reqlist[i], ":", 100);
+                    int i = 1;
+                    while(reqlist[i] != NULL) {
+                        gchar **linesplit = g_strsplit(reqlist[i], ":", 100);
 
-                if(g_strv_length(linesplit) == 0) {
-                    /* We reached an empty line and the body is in the next line. */
-                    clientHeader->body = reqlist[i + 1];
-                    break;
-                }
+                        if(g_strv_length(linesplit) == 0) {
+                            /* We reached an empty line and the body is in the next line. */
+                            clientHeader->body = reqlist[i + 1];
+                            break;
+                        }
+                        else {
+                            /* We add the additional header to the struct */
+                            clientHeader->addHdrs = g_slist_append(clientHeader->addHdrs, reqlist[i]);
+                        }
+                        ++i;
+                        g_strfreev(linesplit);
+                    }
+
+                    /* Getting logging information about the request */
+                    strcpy(logInfo->requestMethod, clientHeader->type);
+                    strcpy(logInfo->requestedURL, clientHeader->file);
+
+                    if(g_strcmp0(clientHeader->httpVersion, "HTTP/1.0") != 0 && g_strcmp0(clientHeader->httpVersion, "HTTP/1.1") != 0) {
+                        write(connfd, "HTTP/1.0 400 Bad Request\n", (size_t) 512);
+                        strcpy(logInfo->responseCode, "400 Bad Request");
+                    }
+                    else {
+                        /* Everything is in order, handle the request */
+                        strcpy(logInfo->responseCode, "200 OK");
+                        if(g_strcmp0(clientHeader->type, "GET") == 0) {
+                            handleGET(connfd, clientHeader);
+                        }
+                        else if(g_strcmp0(clientHeader->type, "POST") == 0) {
+                            handlePOST(connfd, clientHeader);
+                        }
+                        else if(g_strcmp0(clientHeader->type, "HEAD") == 0) {
+                            handleHEAD(connfd);
+                        }
+                    }
+
+                    /* Freeing the allocated memory */
+                    g_free(logInfo);
+                    g_strfreev(reqlist);
+                    g_free(clientHeader);
+
+
+                    /* Print the message to stdout and flush. */
+                    // fprintf(stdout, "Received:\n%s\n", message);
+                    fflush(stdout);
+                    FD_SET (connfd, &rfds);
+                    shutdown(i, SHUT_RDWR);
+                } 
                 else {
-                    /* We add the additional header to the struct */
-                    clientHeader->addHdrs = g_slist_append(clientHeader->addHdrs, reqlist[i]);
+                    /* Data arriving on an already-connected socket. */
+                    /* We should close the connection. */
+                    close(i);
+                    FD_CLR (i, &rfds);
                 }
-                ++i;
-                g_strfreev(linesplit);
-            }
-
-            /* Getting logging information about the request */
-            strcpy(logInfo->requestMethod, clientHeader->type);
-            strcpy(logInfo->requestedURL, clientHeader->file);
-
-            if(g_strcmp0(clientHeader->httpVersion, "HTTP/1.0") != 0 && g_strcmp0(clientHeader->httpVersion, "HTTP/1.1") != 0) {
-                write(connfd, "HTTP/1.0 400 Bad Request\n", (size_t) 512);
-                strcpy(logInfo->responseCode, "400 Bad Request");
-            }
-            else {
-                /* Everything is in order, handle the request */
-                strcpy(logInfo->responseCode, "200 OK");
-                if(g_strcmp0(clientHeader->type, "GET") == 0) {
-                    handleGET(connfd, clientHeader);
-                }
-                else if(g_strcmp0(clientHeader->type, "POST") == 0) {
-                    handlePOST(connfd, clientHeader);
-                }
-                else if(g_strcmp0(clientHeader->type, "HEAD") == 0) {
-                    handleHEAD(connfd);
-                }
-                g_free(logInfo);
-                g_strfreev(reqlist);
-                g_free(clientHeader);
-            }
-            /* Freeing the allocated memory */
-
-            /* We should close the connection. */
-            shutdown(connfd, SHUT_RDWR);
-            close(connfd);
-
-            /* Print the message to stdout and flush. */
-            // fprintf(stdout, "Received:\n%s\n", message);
-            fflush(stdout);
-
-        } else {
+            }   
+        }
+        else {
             fprintf(stdout, "No message in five seconds.\n");
             fflush(stdout);
         }
