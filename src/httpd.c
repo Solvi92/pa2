@@ -24,7 +24,7 @@ typedef struct {
     char* file;         // Requested file
     char* httpVersion;  // Http version
     char* body;         // Contents of a POST request
-    GSList *addHdrs;       // Additional header fields
+    GSList *addHdrs;    // Additional header fields
 } ClientHeader;
 
 typedef struct {
@@ -91,18 +91,48 @@ void handleGET(int connfd, ClientHeader *clientHeader) {
     /* Creating the page */
     GString *page = g_string_new("<!doctype html>\n<head>\n<title>Jolly good</title>\n</head>\n");
     GString *cookie = g_string_new("");
+    GString *clientCookie = g_string_new("");
+
+    /* Checking if the client supplied a cookie before we do anything */
+    if(clientHeader->addHdrs != NULL) {
+        /* Traverse through the headers and look for a cookie header */
+        GSList *header = clientHeader->addHdrs;
+        int k = 0;
+        for(k; k < g_slist_length(clientHeader->addHdrs); ++k) {
+            char *bg;
+            if((bg = strstr(header->data, "Cookie")) != NULL) {
+                printf("Cookie found\n");
+                gchar **beforeAndCK = g_strsplit(bg, "&", -1);
+                gchar **bgSplitCK = g_strsplit(beforeAndCK[0], "=", -1);
+
+                printf("Cookie var: %s\n", bgSplitCK[1]);
+                g_string_append(clientCookie, bgSplitCK[1]);
+
+                g_strfreev(beforeAndCK);
+                g_strfreev(bgSplitCK);
+            }
+
+            header = header->next;
+        }
+    }
 
     /* Checking to see if any query parameters are following */
     gchar **list = g_strsplit(logInfo->requestedURL, "?", -1);
-    if(g_strv_length(list) > 1) {
+    if(g_strv_length(list) > 1 || clientCookie->len > 0) {
         /* Leaving body open in case color has to be added */
         g_string_append(page, "<body");
 
         /* Checking to see if color has been specified */
         if(strstr(list[0], "color") != NULL) {
             char *bg;
+            /* No query parameters supplied, using the cookie */
+            if(list[1] == NULL && clientCookie->len > 0) {
+                g_string_append(page, " style='background-color:");
+                g_string_append(page, clientCookie->str);
+                g_string_append(page, "'");
+            }
             /* Finding the word bg in the query and assigning the color with it */
-            if((bg = strstr(list[1], "bg=")) != NULL) {
+            else if((bg = strstr(list[1], "bg=")) != NULL) {
                 gchar **beforeAnd = g_strsplit(bg, "&", -1);
                 gchar **bgSplit = g_strsplit(beforeAnd[0], "=", -1);
 
@@ -152,7 +182,8 @@ void handleGET(int connfd, ClientHeader *clientHeader) {
     if(clientHeader->addHdrs != NULL) {
         page = g_string_append(page, "<p>\n");
         GSList *header = clientHeader->addHdrs;
-        while(header != NULL) {
+        int k = 0;
+        for(k; k < g_slist_length(clientHeader->addHdrs); ++k) {
             page = g_string_append(page, header->data);
             page = g_string_append(page, " </ br>\n");
 
@@ -162,7 +193,7 @@ void handleGET(int connfd, ClientHeader *clientHeader) {
         page = g_string_append(page, "</p>\n");
     }
 
-    page = g_string_append(page, "\nHello mates! Welcome to our web site\n</body>\n</html>");
+    page = g_string_append(page, "\nHello mates! Welcome to our web site\n</body>\n</html>\n\n");
 
 
     /* Creating the http header and prepending it to the page */
@@ -172,18 +203,19 @@ void handleGET(int connfd, ClientHeader *clientHeader) {
     g_string_append(RESPONSE_HEAD, "\r\n\r\n");
     g_string_prepend(page, RESPONSE_HEAD->str);
     printf("Header:\n%s", RESPONSE_HEAD->str);
-    g_string_free(cookie, 1);
     
-
     /* Sending the page to the client */
     write(connfd, page->str, (size_t) page->len);
 
-    /* Free */
-    g_string_free(page, 1);
-    g_string_free(RESPONSE_HEAD, 1);
 
     /* Logging down the user information */
     writeToLog();
+    
+    /* Free */
+    g_string_free(clientCookie, 1);
+    g_string_free(cookie, 1);
+    g_string_free(page, 1);
+    g_string_free(RESPONSE_HEAD, 1);
     g_strfreev(list);
 }
 
@@ -293,6 +325,7 @@ int main(int argc, char **argv)
                 if(g_strv_length(linesplit) == 0) {
                     /* We reached an empty line and the body is in the next line. */
                     clientHeader->body = reqlist[i + 1];
+                    break;
                 }
                 else {
                     /* We add the additional header to the struct */
@@ -322,18 +355,18 @@ int main(int argc, char **argv)
                 else if(g_strcmp0(clientHeader->type, "HEAD") == 0) {
                     handleHEAD(connfd);
                 }
+                g_free(logInfo);
+                g_strfreev(reqlist);
+                g_free(clientHeader);
             }
             /* Freeing the allocated memory */
-            g_strfreev(reqlist);
-            g_free(clientHeader);
-            g_free(logInfo);
 
             /* We should close the connection. */
             shutdown(connfd, SHUT_RDWR);
             close(connfd);
 
             /* Print the message to stdout and flush. */
-            fprintf(stdout, "Received:\n%s\n", message);
+            // fprintf(stdout, "Received:\n%s\n", message);
             fflush(stdout);
 
         } else {
